@@ -13,6 +13,16 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ---
 
+## Recent Updates
+
+**Rate limiting improvements** – switching between long playlists no longer triggers rate-limit errors from TIDAL's API. Two changes landed together:
+- **Windowed URL loading** – only the next 8 stream URLs are fetched at a time rather than the entire playlist upfront. When you switch playlists, far fewer wasted requests are made before the old load is cancelled. URLs for upcoming tracks are fetched quietly in the background as playback advances.
+- **Global throttle + auto-retry** – all API calls now share a single rate limiter (0.3 s minimum between requests). If a rate-limit response is received anyway, the request is retried automatically with the server's suggested back-off delay rather than surfacing an error.
+
+**Configurable background colour** – set `"background"` in `config.json` to any CSS colour string to override the app background. The default (`"ansi_default"`) continues to use your terminal's background and respects transparency settings.
+
+---
+
 ## Features
 
 ### Playback
@@ -217,6 +227,7 @@ Create `~/.config/low-tide/config.json` to override defaults:
 | `crossfade` | integer | `5` | Crossfade duration in seconds when crossfade is enabled (toggle with `x`). Crossfade is off at startup regardless of this value. |
 | `eq_theme` | `"classic"` `"fire"` `"ice"` `"mono"` `"neon"` | `"mono"` | Colour theme for the EQ visualiser in the now-playing bar. |
 | `eq_labels` | `true` / `false` | `false` | Show frequency labels (32 Hz – 16 kHz) beneath the EQ visualiser bars. |
+| `background` | CSS color string | `"ansi_default"` | App background color. `"ansi_default"` uses the terminal's default background, which respects your terminal emulator's transparency setting (e.g. `background_opacity` in kitty). Set to a hex color like `"#181825"` to disable transparency. |
 
 ![EQ themes](assets/eq_themes.png)
 
