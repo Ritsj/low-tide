@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import os
+import threading
+import time
 from typing import Optional
 
 import tidalapi
 from tidalapi.media import Quality
+
+log = logging.getLogger(__name__)
 
 CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "low-tide")
 CONF_PATH = os.path.join(CONF_DIR, "session.json")
@@ -20,12 +25,49 @@ _QUALITY_MAP = {
     "max": Quality.hi_res_lossless,
 }
 
+# Minimum seconds between API calls (shared across all threads)
+_MIN_CALL_INTERVAL = 0.3
+# Retry attempts before letting TooManyRequests propagate
+_MAX_RETRIES = 2
+
 
 class TidalClient:
     def __init__(self):
+        self._api_lock = threading.Lock()
+        self._last_call_time = 0.0
         quality = self._load_quality()
         self.session = tidalapi.Session(tidalapi.Config(quality=quality))
         self._try_load_tokens()
+
+    # --- Rate limiting ---
+
+    def _throttle(self) -> None:
+        with self._api_lock:
+            now = time.monotonic()
+            wait = _MIN_CALL_INTERVAL - (now - self._last_call_time)
+            if wait > 0:
+                time.sleep(wait)
+            self._last_call_time = time.monotonic()
+
+    def _api_call(self, fn, *args, **kwargs):
+        """Call fn with throttling and automatic retry on TooManyRequests."""
+        from tidalapi.exceptions import TooManyRequests
+        for attempt in range(_MAX_RETRIES):
+            self._throttle()
+            try:
+                return fn(*args, **kwargs)
+            except TooManyRequests as e:
+                wait = max(1, getattr(e, "retry_after", None) or 5)
+                log.warning(
+                    "TIDAL rate limit; retrying in %ss (attempt %d/%d)",
+                    wait, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(wait)
+        # Final attempt – let any exception propagate
+        self._throttle()
+        return fn(*args, **kwargs)
+
+    # --- Config ---
 
     def _load_config(self) -> dict:
         try:
@@ -41,6 +83,8 @@ class TidalClient:
     @property
     def config(self) -> dict:
         return self._load_config()
+
+    # --- Auth ---
 
     def _try_load_tokens(self) -> None:
         try:
@@ -80,8 +124,10 @@ class TidalClient:
     def me(self):
         return self.session.user
 
+    # --- Search / resolve ---
+
     def search(self, query: str, limit: int = 50) -> dict:
-        return self.session.search(query, limit=limit)
+        return self._api_call(self.session.search, query, limit=limit)
 
     def resolve_track(self, artist: str, title: str):
         """Search TIDAL for a track by artist + title. Returns the best match or None."""
@@ -104,7 +150,7 @@ class TidalClient:
 
         def _candidates(query: str) -> list:
             try:
-                return self.session.search(query, limit=25).get("tracks") or []
+                return self.search(query, limit=25).get("tracks") or []
             except Exception:
                 return []
 
@@ -119,7 +165,6 @@ class TidalClient:
                 title_exact = t_fold == r_title_fold
                 title_ok = (title_exact or _match(t_low, r_title) or _match(t_norm, _norm(r_title))
                             or _match(t_fold, r_title_fold))
-                # Looser artist threshold when the title is already an exact match
                 artist_threshold = 0.76 if title_exact else 0.82
                 artist_ok = (_match(artist.lower(), r_artist) or _match(_norm(artist), _norm(r_artist))
                              or _match(a_fold, r_artist_fold)
@@ -131,58 +176,80 @@ class TidalClient:
         try:
             track = _find(_candidates(f"{artist} {title}"))
             if track is None:
-                # Fallback: search by title alone in case artist spelling diverges badly
                 track = _find(_candidates(title))
             return track
         except Exception:
             pass
         return None
 
+    # --- Library ---
+
     def get_user_playlists(self) -> list:
-        return self.session.user.playlists()
+        return self._api_call(self.session.user.playlists)
 
     def get_favorite_tracks(self) -> list:
-        return self.session.user.favorites.tracks_paginated()
+        return self._api_call(self.session.user.favorites.tracks_paginated)
 
     def get_favorite_albums(self, order=None, order_direction=None) -> list:
-        return self.session.user.favorites.albums_paginated(order=order, order_direction=order_direction)
+        return self._api_call(
+            self.session.user.favorites.albums_paginated,
+            order=order,
+            order_direction=order_direction,
+        )
 
     def get_favorite_artists(self) -> list:
-        return self.session.user.favorites.artists_paginated()
+        return self._api_call(self.session.user.favorites.artists_paginated)
 
     def get_album_tracks(self, album) -> list:
-        return album.tracks()
+        return self._api_call(album.tracks)
 
     def get_playlist_tracks(self, playlist) -> list:
-        if hasattr(playlist, "tracks"):
-            return playlist.tracks()
-        return playlist.items()
+        fn = playlist.tracks if hasattr(playlist, "tracks") else playlist.items
+        return self._api_call(fn)
 
     def get_artist_albums(self, artist) -> list:
-        return artist.get_albums()
+        return self._api_call(artist.get_albums)
 
     def get_artist_top_tracks(self, artist, limit: int = 20) -> list:
-        return artist.get_top_tracks(limit=limit)
+        return self._api_call(artist.get_top_tracks, limit=limit)
 
     def get_artist_ep_singles(self, artist) -> list:
-        return artist.get_ep_singles()
+        return self._api_call(artist.get_ep_singles)
 
     def get_mix_tracks(self, mix) -> list:
-        return mix.items()
+        return self._api_call(mix.items)
+
+    def get_track(self, track_id: int):
+        return self._api_call(self.session.track, track_id)
+
+    def get_for_you(self):
+        return self._api_call(self.session.for_you)
+
+    def get_mixes(self):
+        return self._api_call(self.session.mixes)
+
+    def get_home(self):
+        return self._api_call(self.session.home)
+
+    def get_genres(self) -> list:
+        return self._api_call(self.session.genre.get_genres)
+
+    def get_genre_tracks(self, genre) -> list:
+        import tidalapi.media as _media
+        return self._api_call(genre.items, _media.Track)
+
+    # --- Playback ---
 
     def get_track_url(self, track) -> Optional[str]:
-        from tidalapi.exceptions import TooManyRequests
         try:
-            return track.get_url()
-        except TooManyRequests:
-            raise
+            return self._api_call(track.get_url)
         except Exception:
             return None
 
     def get_lyrics(self, track) -> tuple[str, str]:
         """Returns (plain_text, lrc_subtitles). Either may be empty string."""
         try:
-            lyr = track.lyrics()
+            lyr = self._api_call(track.lyrics)
             return lyr.text or "", lyr.subtitles or ""
         except Exception:
             return "", ""
@@ -196,21 +263,16 @@ class TidalClient:
             "isrc": getattr(track, "isrc", None),
         }
 
-    def get_genres(self) -> list:
-        return self.session.genre.get_genres()
-
-    def get_genre_tracks(self, genre) -> list:
-        import tidalapi.media as _media
-        return genre.items(_media.Track)
+    # --- Favourites ---
 
     def add_favourite_track(self, track_id: int) -> bool:
         try:
-            return self.session.user.favorites.add_track(track_id)
+            return self._api_call(self.session.user.favorites.add_track, track_id)
         except Exception:
             return False
 
     def remove_favourite_track(self, track_id: int) -> bool:
         try:
-            return self.session.user.favorites.remove_track(str(track_id))
+            return self._api_call(self.session.user.favorites.remove_track, str(track_id))
         except Exception:
             return False
