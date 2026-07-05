@@ -330,7 +330,11 @@ class LowTideApp(App):
         self._current_idx: int = -1
         self._queue_gen: int = 0  # incremented on each new enqueue to cancel stale workers
         self._load_gen: int = 0   # incremented on each new URL-loading operation
-        self._mpv_loaded_count: int = 0  # how many queue URLs have been appended to mpv
+        self._mpv_loaded_count: int = 0  # high-water mark: next queue index to attempt loading
+        # Maps mpv playlist position -> queue index. Tracks whose URL failed to
+        # load are never appended to mpv, so mpv positions do not line up 1:1 with
+        # queue indices; this list is the source of truth for that mapping.
+        self._mpv_playlist: list[int] = []
         self._extending_lookahead: bool = False
         self._current_track = None
         self._current_favourited: bool = False
@@ -422,9 +426,10 @@ class LowTideApp(App):
             await self.player.set_volume(self._target_volume)
 
         pos = await self.player.get_playlist_pos()
-        if 0 <= pos < len(self._queue):
-            self._current_idx = pos
-            track = self._queue[pos]
+        if 0 <= pos < len(self._mpv_playlist):
+            qidx = self._mpv_playlist[pos]
+            self._current_idx = qidx
+            track = self._queue[qidx]
             self._set_current_track(track)
             self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
             self.scrobbler.track_started(track)
@@ -490,9 +495,10 @@ class LowTideApp(App):
         self._queue_gen += 1
         self._load_gen += 1
         self._mpv_loaded_count = 0
+        self._mpv_playlist = []
         self._extending_lookahead = False
         asyncio.ensure_future(self.player.stop())
-        self._load_queue(rotated, self._queue_gen, self._load_gen)
+        self._load_window(0, self._queue_gen, self._load_gen)
 
     def append_to_queue(self, tracks: list) -> None:
         if not self._queue:
@@ -509,21 +515,32 @@ class LowTideApp(App):
         self.notify(f"Added {label} to queue")
 
     @work(thread=True)
-    def _load_queue(self, tracks: list, queue_gen: int, load_gen: int) -> None:
-        """Load the first _LOOKAHEAD track URLs into mpv; the rest are fetched on demand."""
-        limit = min(_LOOKAHEAD, len(tracks))
-        for i in range(limit):
+    def _load_window(self, start_idx: int, queue_gen: int, load_gen: int) -> None:
+        """Load up to _LOOKAHEAD track URLs into mpv starting at start_idx; the rest
+        are fetched on demand. mpv's playlist is assumed empty (freshly stopped), so
+        the first track that loads successfully replaces, and the rest append."""
+        end = min(start_idx + _LOOKAHEAD, len(self._queue))
+        first = True
+        for i in range(start_idx, end):
             if self._queue_gen != queue_gen or self._load_gen != load_gen:
                 return
-            url = self.client.get_track_url(tracks[i])
+            url = self.client.get_track_url(self._queue[i])
             if not url or self._queue_gen != queue_gen or self._load_gen != load_gen:
                 continue
-            if i == 0:
-                self.call_from_thread(self._play_if_current, url, queue_gen, tracks[0])
+            if first:
+                self.call_from_thread(self._play_if_current, url, queue_gen, self._queue[i], i)
+                first = False
             else:
-                self.call_from_thread(self._append_if_current, url, queue_gen)
+                self.call_from_thread(self._append_if_current, url, queue_gen, i)
         if self._queue_gen == queue_gen and self._load_gen == load_gen:
-            self.call_from_thread(self._mark_initial_loaded, queue_gen, load_gen, limit)
+            if first and end > start_idx:
+                self.call_from_thread(
+                    self.notify,
+                    "Couldn't load any tracks to play. Check your connection or "
+                    "lower the quality setting in config.json.",
+                    severity="error",
+                )
+            self.call_from_thread(self._mark_initial_loaded, queue_gen, load_gen, end)
             self.call_from_thread(
                 lambda: self.query_one(QueuePanel).refresh_queue(self._queue, self._current_idx)
             )
@@ -559,17 +576,18 @@ class LowTideApp(App):
                 self.call_from_thread(self._on_lookahead_cancelled, load_gen)
                 return
             if url:
-                self.call_from_thread(self._on_url_appended, queue_gen, load_gen, i + 1, url)
+                self.call_from_thread(self._on_url_appended, queue_gen, load_gen, i + 1, url, i)
             else:
                 # Skip failed URLs but still advance the loaded count
                 self.call_from_thread(self._advance_loaded_count, queue_gen, load_gen, i + 1)
         self.call_from_thread(self._on_lookahead_done, queue_gen, load_gen)
 
     def _on_url_appended(
-        self, queue_gen: int, load_gen: int, new_count: int, url: str
+        self, queue_gen: int, load_gen: int, new_count: int, url: str, qidx: int
     ) -> None:
         if self._queue_gen == queue_gen and self._load_gen == load_gen:
             asyncio.ensure_future(self.player.append(url))
+            self._mpv_playlist.append(qidx)
             self._mpv_loaded_count = new_count
 
     def _advance_loaded_count(
@@ -587,15 +605,17 @@ class LowTideApp(App):
         if self._load_gen == load_gen:
             self._extending_lookahead = False
 
-    def _play_if_current(self, url: str, gen: int, track) -> None:
+    def _play_if_current(self, url: str, gen: int, track, qidx: int) -> None:
         if self._queue_gen != gen:
             return
         asyncio.ensure_future(self.player.play(url))
+        self._mpv_playlist = [qidx]
         self._set_current_track(track)
 
-    def _append_if_current(self, url: str, gen: int) -> None:
+    def _append_if_current(self, url: str, gen: int, qidx: int) -> None:
         if self._queue_gen == gen:
             asyncio.ensure_future(self.player.append(url))
+            self._mpv_playlist.append(qidx)
 
     def on_track_list_track_append_requested(self, event) -> None:
         self.append_to_queue([event.track])
@@ -604,46 +624,30 @@ class LowTideApp(App):
         """Skip playback to a specific queue position."""
         if not (0 <= idx < len(self._queue)):
             return
-        if idx < self._mpv_loaded_count:
-            await self.player._cmd(["set_property", "playlist-pos", idx])
+        if idx in self._mpv_playlist:
+            # Already buffered in mpv, so jump to its actual playlist position.
+            await self.player._cmd(
+                ["set_property", "playlist-pos", self._mpv_playlist.index(idx)]
+            )
             # If mpv went idle after the playlist ended, the above restores the
             # position but leaves it paused — ensure playback actually starts.
             await self.player._cmd(["set_property", "pause", False])
         else:
-            # URL for this position isn't in mpv yet — load on demand.
-            start = self._mpv_loaded_count
-            self._extending_lookahead = True
-            self._load_gen += 1
-            self._load_and_jump(idx, start, self._queue_gen, self._load_gen)
+            # Not in mpv's playlist (beyond the lookahead window, or its URL
+            # failed to load earlier). Rebuild the window starting from here.
+            self._play_from_index(idx)
 
-    @work(thread=True)
-    def _load_and_jump(
-        self, target_idx: int, start: int, queue_gen: int, load_gen: int
-    ) -> None:
-        """Fetch URLs for queue[start..target_idx] then jump to target_idx."""
-        for i in range(start, target_idx + 1):
-            if self._queue_gen != queue_gen or self._load_gen != load_gen:
-                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
-                return
-            url = self.client.get_track_url(self._queue[i])
-            if self._queue_gen != queue_gen or self._load_gen != load_gen:
-                self.call_from_thread(self._on_lookahead_cancelled, load_gen)
-                return
-            if url:
-                self.call_from_thread(self._on_url_appended, queue_gen, load_gen, i + 1, url)
-            else:
-                self.call_from_thread(self._advance_loaded_count, queue_gen, load_gen, i + 1)
-        if self._queue_gen == queue_gen and self._load_gen == load_gen:
-            self.call_from_thread(self._do_playlist_jump, target_idx, queue_gen, load_gen)
-
-    def _do_playlist_jump(self, idx: int, queue_gen: int, load_gen: int) -> None:
-        if self._queue_gen == queue_gen and self._load_gen == load_gen:
-            self._extending_lookahead = False
-            asyncio.ensure_future(self._async_playlist_jump(idx))
-
-    async def _async_playlist_jump(self, idx: int) -> None:
-        await self.player._cmd(["set_property", "playlist-pos", idx])
-        await self.player._cmd(["set_property", "pause", False])
+    def _play_from_index(self, idx: int) -> None:
+        """Stop and rebuild mpv's playlist starting at queue index idx, then play.
+        Preserves queue order and display; used for jumps outside the loaded window."""
+        self._current_idx = idx
+        self._queue_gen += 1
+        self._load_gen += 1
+        self._mpv_loaded_count = idx
+        self._mpv_playlist = []
+        self._extending_lookahead = False
+        asyncio.ensure_future(self.player.stop())
+        self._load_window(idx, self._queue_gen, self._load_gen)
 
     # --- Open objects (albums, artists, mixes, playlists) by type ---
 
@@ -868,13 +872,9 @@ class LowTideApp(App):
                 )
                 if picks:
                     new_idx = self._queue.index(picks[0])
-                    if new_idx < self._mpv_loaded_count:
-                        await self.player._cmd(["set_property", "playlist-pos", new_idx])
-                        await self.player._cmd(["set_property", "pause", False])
-                    else:
-                        # Restart the queue from the picked track so mpv's playlist
-                        # stays in sync with self._queue without fetching a large gap.
-                        self.enqueue_and_play(self._queue, start_index=new_idx)
+                    # jump_to_queue_index maps through _mpv_playlist, so it works
+                    # whether or not the picked track is already buffered in mpv.
+                    await self.jump_to_queue_index(new_idx)
                     return
         await self.player.next()
 
