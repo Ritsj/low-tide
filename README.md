@@ -15,7 +15,11 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ## Recent Updates
 
-**Rate limiting improvements** – switching between long playlists no longer triggers rate-limit errors from TIDAL's API. Two changes landed together:
+**Hi-res playback** – tracks available in Hi-Res Lossless (FLAC up to 24-bit / 192 kHz) now play at full resolution. TIDAL delivers hi-res as a segmented DASH stream rather than a single file, which the previous stream fetch couldn't read, so hi-res tracks silently failed to play. low-tide now decodes the DASH manifest and hands it to mpv directly. Tracks that offer hi-res show a small ᴴᴵᴿᴱˢ badge in track lists, and if a quality tier isn't covered by your subscription, playback falls back to the next tier down instead of failing.
+
+**Now-playing sync fix** – if a stream URL failed to load mid-queue (for example under rate limiting), the now-playing bar, scrobbler and queue highlight could drift out of sync with the track actually playing. mpv's playlist position is now mapped explicitly to the queue, so the display always matches the audio, and an unloadable track is skipped cleanly rather than shifting everything after it.
+
+**Rate limiting improvements** – switching between long playlists no longer triggers rate-limit errors from TIDAL's API. This came from two changes:
 - **Windowed URL loading** – only the next 8 stream URLs are fetched at a time rather than the entire playlist upfront. When you switch playlists, far fewer wasted requests are made before the old load is cancelled. URLs for upcoming tracks are fetched quietly in the background as playback advances.
 - **Global throttle + auto-retry** – all API calls now share a single rate limiter (0.3 s minimum between requests). If a rate-limit response is received anyway, the request is retried automatically with the server's suggested back-off delay rather than surfacing an error.
 

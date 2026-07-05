@@ -4,6 +4,7 @@ import datetime
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 from typing import Optional
@@ -25,6 +26,17 @@ _QUALITY_MAP = {
     "max": Quality.hi_res_lossless,
 }
 
+# Streaming tiers highest to lowest. get_track_url walks down this list when the
+# subscription can't stream a tier: requesting a tier above the account's plan
+# (e.g. HI_RES without a Max subscription) returns HTTP 401/403 for the stream
+# URL even though metadata calls succeed.
+_QUALITY_ORDER = [
+    Quality.hi_res_lossless,
+    Quality.high_lossless,
+    Quality.low_320k,
+    Quality.low_96k,
+]
+
 # Minimum seconds between API calls (shared across all threads)
 _MIN_CALL_INTERVAL = 0.3
 # Retry attempts before letting TooManyRequests propagate
@@ -34,10 +46,27 @@ _MAX_RETRIES = 2
 class TidalClient:
     def __init__(self):
         self._api_lock = threading.Lock()
+        self._quality_lock = threading.Lock()
         self._last_call_time = 0.0
         quality = self._load_quality()
         self.session = tidalapi.Session(tidalapi.Config(quality=quality))
+        # Highest tier we'll attempt for stream URLs. Starts at the configured
+        # quality and ratchets down permanently if the subscription rejects it.
+        try:
+            self._quality_floor = _QUALITY_ORDER.index(quality)
+        except ValueError:
+            self._quality_floor = 0
+        # Hi-res DASH manifests are written here as temp .mpd files for mpv to
+        # play. Clear any left over from a previous run.
+        self._manifest_dir = os.path.join(tempfile.gettempdir(), "low-tide-manifests")
+        self._clear_manifests()
+        os.makedirs(self._manifest_dir, exist_ok=True)
         self._try_load_tokens()
+
+    def _clear_manifests(self) -> None:
+        import shutil
+
+        shutil.rmtree(self._manifest_dir, ignore_errors=True)
 
     # --- Rate limiting ---
 
@@ -241,10 +270,56 @@ class TidalClient:
     # --- Playback ---
 
     def get_track_url(self, track) -> Optional[str]:
-        try:
-            return self._api_call(track.get_url)
-        except Exception:
-            return None
+        """Return something mpv can play for this track: a direct stream URL for
+        byte-stream (lossless and below) tracks, or a path to a temp .mpd manifest
+        for segmented hi-res DASH tracks. Falls back down the quality tiers if the
+        subscription rejects the configured one. Returns None if no tier works."""
+        name = getattr(track, "name", "?")
+        for idx in range(self._quality_floor, len(_QUALITY_ORDER)):
+            quality = _QUALITY_ORDER[idx]
+            try:
+                return self._resolve_stream(track, quality)
+            except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", None)
+                log.warning(
+                    "get_track_url failed for %r at %s: %s: %s",
+                    name, getattr(quality, "value", quality), type(e).__name__, e,
+                )
+                if status in (401, 403):
+                    # Not entitled to this tier; stop attempting it going forward.
+                    self._quality_floor = idx + 1
+                # Fall through to the next (lower) tier.
+        return None
+
+    def _resolve_stream(self, track, quality) -> Optional[str]:
+        """Fetch the playback manifest at a specific quality and turn it into a
+        target mpv can open. The tier lives on the shared session config, so
+        serialise the swap-call-restore to keep threads honest."""
+        with self._quality_lock:
+            prev = self.session.config.quality
+            self.session.config.quality = quality
+            try:
+                stream = self._api_call(track.get_stream)
+            finally:
+                self.session.config.quality = prev
+
+        manifest = stream.get_stream_manifest()
+        if getattr(manifest, "manifest_mime_type", "") == "application/dash+xml":
+            # Segmented hi-res: hand mpv the decoded MPD manifest as a temp file.
+            return self._write_manifest(stream.manifest)
+        # Byte-stream manifest: a single directly-playable URL.
+        urls = manifest.get_urls()
+        return urls[0] if urls else None
+
+    def _write_manifest(self, b64_manifest: str) -> str:
+        """Decode a base64 DASH manifest and write it to a temp .mpd file."""
+        import base64
+
+        os.makedirs(self._manifest_dir, exist_ok=True)
+        fd, path = tempfile.mkstemp(suffix=".mpd", dir=self._manifest_dir)
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64decode(b64_manifest))
+        return path
 
     def get_lyrics(self, track) -> tuple[str, str]:
         """Returns (plain_text, lrc_subtitles). Either may be empty string."""
