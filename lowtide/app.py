@@ -1014,5 +1014,6 @@ class LowTideApp(App):
         self._save_queue()
         self._play_count_store.save()
         self._cleanup_macos_art_temp()
+        self.client._clear_manifests()
         await self.mpris.stop()
         await self.player.shutdown()
