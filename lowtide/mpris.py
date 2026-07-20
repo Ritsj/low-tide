@@ -254,14 +254,14 @@ class MPRISService:
             "xesam:artist": Variant("as", [artist] if artist else []),
             "xesam:album": Variant("s", album),
         }
-        self._emit_properties_changed({"Metadata": Variant("a{sv}", self._player_iface._metadata)})
+        self._emit_properties_changed({"Metadata": self._player_iface._metadata})
 
     def update_playback_status(self, paused: bool) -> None:
         if not self._player_iface:
             return
         status = "Paused" if paused else "Playing"
         self._player_iface._playback_status = status
-        self._emit_properties_changed({"PlaybackStatus": Variant("s", status)})
+        self._emit_properties_changed({"PlaybackStatus": status})
 
     def update_position(self, position_s: float) -> None:
         if not self._player_iface:
@@ -272,37 +272,28 @@ class MPRISService:
         if not self._player_iface:
             return
         self._player_iface._volume = volume_pct / 100.0
-        self._emit_properties_changed({"Volume": Variant("d", self._player_iface._volume)})
+        self._emit_properties_changed({"Volume": self._player_iface._volume})
 
     def update_shuffle(self, shuffle: bool) -> None:
         if not self._player_iface:
             return
         self._player_iface._shuffle = shuffle
-        self._emit_properties_changed({"Shuffle": Variant("b", shuffle)})
+        self._emit_properties_changed({"Shuffle": shuffle})
 
     def update_loop_status(self, repeat: bool) -> None:
         if not self._player_iface:
             return
         status = "Playlist" if repeat else "None"
         self._player_iface._loop_status = status
-        self._emit_properties_changed({"LoopStatus": Variant("s", status)})
+        self._emit_properties_changed({"LoopStatus": status})
 
     def _emit_properties_changed(self, changed: dict) -> None:
-        if not self._bus or not self._player_iface:
+        if not self._player_iface:
             return
         try:
-            from dbus_next.message import Message
-            from dbus_next import MessageType
-            msg = Message.new_signal(
-                MPRIS_OBJECT_PATH,
-                "org.freedesktop.DBus.Properties",
-                "PropertiesChanged",
-                "sa{sv}as",
-                ["org.mpris.MediaPlayer2.Player", changed, []],
-            )
-            self._bus.send_message(msg)
-        except Exception:
-            pass
+            self._player_iface.emit_properties_changed(changed)
+        except Exception as error:
+            log.warning("Failed to emit MPRIS property changes: %s", error)
 
     async def stop(self) -> None:
         if self._bus:
