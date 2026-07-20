@@ -48,6 +48,18 @@ class MediaPlayer2Interface(ServiceInterface):
         return "low-tide"
 
     @dbus_property(access=PropertyAccess.READ)
+    def Fullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanSetFullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def DesktopEntry(self) -> "s":  # noqa: F821
+        return "low-tide"
+
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedUriSchemes(self) -> "as":  # noqa: F821
         return []
 
