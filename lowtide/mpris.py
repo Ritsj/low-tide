@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Callable
 
 from dbus_next.aio import MessageBus
 from dbus_next.service import ServiceInterface, dbus_property, method, signal
+from dbus_next.constants import PropertyAccess
 from dbus_next import BusType, Variant
 
 if TYPE_CHECKING:
@@ -30,27 +31,39 @@ class MediaPlayer2Interface(ServiceInterface):
     def Quit(self):
         self._quit_cb()
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanQuit(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanRaise(self) -> "b":  # noqa: F821
         return False
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def HasTrackList(self) -> "b":  # noqa: F821
         return False
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Identity(self) -> "s":  # noqa: F821
         return "low-tide"
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
+    def Fullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanSetFullscreen(self) -> "b":  # noqa: F821
+        return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def DesktopEntry(self) -> "s":  # noqa: F821
+        return "low-tide"
+
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedUriSchemes(self) -> "as":  # noqa: F821
         return []
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def SupportedMimeTypes(self) -> "as":  # noqa: F821
         return []
 
@@ -104,11 +117,20 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
 
     @method()
     def Seek(self, offset: "x"):  # noqa: F821
-        asyncio.ensure_future(self._seek_cb(offset / 1_000_000))
+        # MPRIS Seek supplies a relative offset (microseconds); the player
+        # performs an absolute seek, so convert against the tracked position.
+        current_seconds = self._position / 1_000_000
+        target_seconds = max(0.0, current_seconds + offset / 1_000_000)
+        asyncio.ensure_future(self._seek_cb(target_seconds))
 
     @method()
     def SetPosition(self, track_id: "o", position: "x"):  # noqa: F821
-        pass
+        # Ignore stale requests aimed at a track that is no longer current.
+        current_track_id = self._metadata.get("mpris:trackid")
+        if current_track_id is None or current_track_id.value != track_id:
+            return
+        target_seconds = max(0.0, position / 1_000_000)
+        asyncio.ensure_future(self._seek_cb(target_seconds))
 
     @method()
     def OpenUri(self, uri: "s"):  # noqa: F821
@@ -122,7 +144,7 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
 
     # --- Properties ---
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def PlaybackStatus(self) -> "s":  # noqa: F821
         return self._playback_status
 
@@ -142,7 +164,7 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def Shuffle(self, val: "b"):  # noqa: F821
         self._shuffle = val
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":  # noqa: F821
         return self._metadata
 
@@ -154,43 +176,43 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def Volume(self, val: "d"):  # noqa: F821
         self._volume = max(0.0, min(1.0, val))
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":  # noqa: F821
         return self._position
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MinimumRate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def MaximumRate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Rate(self) -> "d":  # noqa: F821
         return 1.0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoNext(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanGoPrevious(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPlay(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanPause(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanSeek(self) -> "b":  # noqa: F821
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b":  # noqa: F821
         return True
 
@@ -241,14 +263,14 @@ class MPRISService:
             "xesam:artist": Variant("as", [artist] if artist else []),
             "xesam:album": Variant("s", album),
         }
-        self._emit_properties_changed({"Metadata": Variant("a{sv}", self._player_iface._metadata)})
+        self._emit_properties_changed({"Metadata": self._player_iface._metadata})
 
     def update_playback_status(self, paused: bool) -> None:
         if not self._player_iface:
             return
         status = "Paused" if paused else "Playing"
         self._player_iface._playback_status = status
-        self._emit_properties_changed({"PlaybackStatus": Variant("s", status)})
+        self._emit_properties_changed({"PlaybackStatus": status})
 
     def update_position(self, position_s: float) -> None:
         if not self._player_iface:
@@ -259,37 +281,28 @@ class MPRISService:
         if not self._player_iface:
             return
         self._player_iface._volume = volume_pct / 100.0
-        self._emit_properties_changed({"Volume": Variant("d", self._player_iface._volume)})
+        self._emit_properties_changed({"Volume": self._player_iface._volume})
 
     def update_shuffle(self, shuffle: bool) -> None:
         if not self._player_iface:
             return
         self._player_iface._shuffle = shuffle
-        self._emit_properties_changed({"Shuffle": Variant("b", shuffle)})
+        self._emit_properties_changed({"Shuffle": shuffle})
 
     def update_loop_status(self, repeat: bool) -> None:
         if not self._player_iface:
             return
         status = "Playlist" if repeat else "None"
         self._player_iface._loop_status = status
-        self._emit_properties_changed({"LoopStatus": Variant("s", status)})
+        self._emit_properties_changed({"LoopStatus": status})
 
     def _emit_properties_changed(self, changed: dict) -> None:
-        if not self._bus or not self._player_iface:
+        if not self._player_iface:
             return
         try:
-            from dbus_next.message import Message
-            from dbus_next import MessageType
-            msg = Message.new_signal(
-                MPRIS_OBJECT_PATH,
-                "org.freedesktop.DBus.Properties",
-                "PropertiesChanged",
-                "sa{sv}as",
-                ["org.mpris.MediaPlayer2.Player", changed, []],
-            )
-            self._bus.send_message(msg)
-        except Exception:
-            pass
+            self._player_iface.emit_properties_changed(changed)
+        except Exception as error:
+            log.warning("Failed to emit MPRIS property changes: %s", error)
 
     async def stop(self) -> None:
         if self._bus:

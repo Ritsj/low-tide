@@ -15,6 +15,8 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ## Recent Updates
 
+**MPRIS fixes for strict media clients** – low-tide now works with stricter MPRIS clients such as Quickshell/Caelestia, not just playerctl. The D-Bus service was silently failing to register because getter-only properties were declared writable, and even once visible it was missing root-interface properties (`Fullscreen`, `CanSetFullscreen`, `DesktopEntry`) that strict clients require. Live title, artist, artwork, duration and playback status now reach clients too, since property-change signals were being emitted through a nonexistent API and dropped. Seeking also follows MPRIS semantics properly: relative `Seek` and absolute progress-bar `SetPosition` both work. Thanks to @JDY-exe for the detailed report and diagnosis.
+
 **Hi-res playback** – tracks available in Hi-Res Lossless (FLAC up to 24-bit / 192 kHz) now play at full resolution. TIDAL delivers hi-res as a segmented DASH stream rather than a single file, which the previous stream fetch couldn't read, so hi-res tracks silently failed to play. low-tide now decodes the DASH manifest and hands it to mpv directly. Tracks that offer hi-res show a small ᴴᴵᴿᴱˢ badge in track lists, and if a quality tier isn't covered by your subscription, playback falls back to the next tier down instead of failing.
 
 **Now-playing sync fix** – if a stream URL failed to load mid-queue (for example under rate limiting), the now-playing bar, scrobbler and queue highlight could drift out of sync with the track actually playing. mpv's playlist position is now mapped explicitly to the queue, so the display always matches the audio, and an unloadable track is skipped cleanly rather than shifting everything after it.
