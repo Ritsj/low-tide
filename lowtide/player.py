@@ -157,6 +157,9 @@ class Player:
     async def toggle_pause(self) -> None:
         await self._cmd(["cycle", "pause"])
 
+    async def set_paused(self, paused: bool) -> None:
+        await self._cmd(["set_property", "pause", paused])
+
     async def next(self) -> None:
         await self._cmd(["playlist-next", "force"])
 

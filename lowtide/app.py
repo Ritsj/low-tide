@@ -464,9 +464,22 @@ class LowTideApp(App):
         else:
             _, lrc = self.client.get_lyrics(track)
             lines = parse_lrc(lrc) if lrc else []
-        self.call_from_thread(self._apply_track_extras, info, lines)
+        self.call_from_thread(self._apply_track_extras, track, info, lines)
+        track_id = getattr(track, "id", None)
+        if not isinstance(track, LocalTrack) and track_id is not None:
+            # Slow on first call (fetches all favourites), so do it after lyrics.
+            fav = self.client.is_favourite_track(track_id)
+            self.call_from_thread(self._apply_favourite_lookup, track, fav)
 
-    def _apply_track_extras(self, info: dict, lines: list) -> None:
+    def _apply_favourite_lookup(self, track, favourited: bool) -> None:
+        if self._current_track is not track:
+            return
+        self._current_favourited = favourited
+        self.query_one(NowPlayingBar).favourited = favourited
+
+    def _apply_track_extras(self, track, info: dict, lines: list) -> None:
+        if self._current_track is not track:
+            return
         bar = self.query_one(NowPlayingBar)
         bar.set_track_info(info)
         bar.set_lyrics(lines)
@@ -767,7 +780,8 @@ class LowTideApp(App):
 
     @work(thread=True)
     def action_toggle_favourite(self) -> None:
-        if self._current_track is None:
+        from lowtide.local_track import LocalTrack
+        if self._current_track is None or isinstance(self._current_track, LocalTrack):
             return
         track_id = getattr(self._current_track, "id", None)
         if track_id is None:
@@ -966,15 +980,24 @@ class LowTideApp(App):
         # Show the queue immediately from saved metadata — no TIDAL calls yet
         self.call_from_thread(self._show_restored_ui, placeholders, saved_idx)
 
-        # Fetch real track objects in the background for playback
+        # Fetch real track objects in the background for playback. Tracks that
+        # fail are dropped, so remap saved_idx onto the shorter list: start at
+        # the saved track, or the next one that loaded if it failed itself.
         tracks = []
-        for tid in track_ids:
+        start_idx = 0
+        for i, placeholder in enumerate(placeholders):
+            if placeholder.id is None:
+                continue
             try:
-                tracks.append(self.client.get_track(tid))
+                tracks.append(self.client.get_track(placeholder.id))
             except Exception:
-                pass
+                continue
+            if i < saved_idx:
+                start_idx += 1
         if tracks:
-            self.call_from_thread(self._apply_restored_queue, tracks, saved_idx)
+            if start_idx >= len(tracks):
+                start_idx = 0
+            self.call_from_thread(self._apply_restored_queue, tracks, start_idx)
 
     def _show_restored_ui(self, placeholders: list, current_idx: int) -> None:
         """Populate the UI immediately from saved metadata before playback is ready."""
@@ -1013,6 +1036,7 @@ class LowTideApp(App):
     async def on_unmount(self) -> None:
         self._save_queue()
         self._play_count_store.save()
+        self.scrobbler.shutdown()
         self._cleanup_macos_art_temp()
         self.client._clear_manifests()
         await self.mpris.stop()

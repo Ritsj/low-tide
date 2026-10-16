@@ -12,6 +12,8 @@ from typing import Optional
 import tidalapi
 from tidalapi.media import Quality
 
+from lowtide.local_track import LocalTrack
+
 log = logging.getLogger(__name__)
 
 CONF_DIR = os.path.join(os.path.expanduser("~"), ".config", "low-tide")
@@ -48,6 +50,10 @@ class TidalClient:
         self._api_lock = threading.Lock()
         self._quality_lock = threading.Lock()
         self._last_call_time = 0.0
+        # IDs of the user's favourite tracks, fetched lazily on first lookup and
+        # kept in sync by add/remove_favourite_track.
+        self._fav_lock = threading.Lock()
+        self._fav_track_ids: set[int] | None = None
         quality = self._load_quality()
         self.session = tidalapi.Session(tidalapi.Config(quality=quality))
         # Highest tier we'll attempt for stream URLs. Starts at the configured
@@ -273,7 +279,10 @@ class TidalClient:
         """Return something mpv can play for this track: a direct stream URL for
         byte-stream (lossless and below) tracks, or a path to a temp .mpd manifest
         for segmented hi-res DASH tracks. Falls back down the quality tiers if the
-        subscription rejects the configured one. Returns None if no tier works."""
+        subscription rejects the configured one. Returns None if no tier works.
+        Local files are returned as their path."""
+        if isinstance(track, LocalTrack):
+            return track.path
         name = getattr(track, "name", "?")
         for idx in range(self._quality_floor, len(_QUALITY_ORDER)):
             quality = _QUALITY_ORDER[idx]
@@ -340,14 +349,37 @@ class TidalClient:
 
     # --- Favourites ---
 
+    def is_favourite_track(self, track_id: int) -> bool:
+        """Whether track_id is in the user's favourites. The first call fetches
+        the full favourites list, so call this from a worker thread."""
+        with self._fav_lock:
+            if self._fav_track_ids is None:
+                try:
+                    tracks = self.get_favorite_tracks()
+                except Exception as e:
+                    log.warning("Could not fetch favourite tracks: %s", e)
+                    return False
+                self._fav_track_ids = {t.id for t in tracks}
+            return track_id in self._fav_track_ids
+
     def add_favourite_track(self, track_id: int) -> bool:
         try:
-            return self._api_call(self.session.user.favorites.add_track, track_id)
+            ok = self._api_call(self.session.user.favorites.add_track, track_id)
         except Exception:
             return False
+        if ok:
+            with self._fav_lock:
+                if self._fav_track_ids is not None:
+                    self._fav_track_ids.add(track_id)
+        return ok
 
     def remove_favourite_track(self, track_id: int) -> bool:
         try:
-            return self._api_call(self.session.user.favorites.remove_track, str(track_id))
+            ok = self._api_call(self.session.user.favorites.remove_track, str(track_id))
         except Exception:
             return False
+        if ok:
+            with self._fav_lock:
+                if self._fav_track_ids is not None:
+                    self._fav_track_ids.discard(track_id)
+        return ok

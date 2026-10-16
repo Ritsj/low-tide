@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from typing import TYPE_CHECKING, Callable
 
@@ -16,6 +17,17 @@ log = logging.getLogger(__name__)
 
 MPRIS_BUS_NAME = "org.mpris.MediaPlayer2.low-tide"
 MPRIS_OBJECT_PATH = "/org/mpris/MediaPlayer2"
+
+
+def _mpris_track_id(raw_id) -> str:
+    """Build a D-Bus object path for a track. TIDAL IDs are integers; local
+    tracks use their file path as ID, which isn't a valid path element
+    (only [A-Za-z0-9_] is allowed), so those are hashed."""
+    if isinstance(raw_id, int):
+        element = str(raw_id)
+    else:
+        element = "local_" + hashlib.sha1(str(raw_id).encode()).hexdigest()
+    return f"{MPRIS_OBJECT_PATH}/track/{element}"
 
 
 class MediaPlayer2Interface(ServiceInterface):
@@ -72,12 +84,14 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def __init__(
         self,
         play_pause_cb: Callable,
+        set_paused_cb: Callable,
         next_cb: Callable,
         prev_cb: Callable,
         seek_cb: Callable,
     ):
         super().__init__("org.mpris.MediaPlayer2.Player")
         self._play_pause_cb = play_pause_cb
+        self._set_paused_cb = set_paused_cb
         self._next_cb = next_cb
         self._prev_cb = prev_cb
         self._seek_cb = seek_cb
@@ -95,13 +109,15 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def PlayPause(self):
         asyncio.ensure_future(self._play_pause_cb())
 
+    # Play and Pause are idempotent per the spec (Pause while paused is a
+    # no-op), so set the state explicitly rather than toggling.
     @method()
     def Play(self):
-        asyncio.ensure_future(self._play_pause_cb())
+        asyncio.ensure_future(self._set_paused_cb(False))
 
     @method()
     def Pause(self):
-        asyncio.ensure_future(self._play_pause_cb())
+        asyncio.ensure_future(self._set_paused_cb(True))
 
     @method()
     def Stop(self):
@@ -231,6 +247,7 @@ class MPRISService:
             root_iface = MediaPlayer2Interface(quit_cb=self._app.exit)
             self._player_iface = MediaPlayer2PlayerInterface(
                 play_pause_cb=self._app.player.toggle_pause,
+                set_paused_cb=self._app.player.set_paused,
                 next_cb=self._app.player.next,
                 prev_cb=self._app.player.prev,
                 seek_cb=self._app.player.seek,
@@ -245,7 +262,7 @@ class MPRISService:
     def update_track(self, track) -> None:
         if not self._player_iface:
             return
-        track_id = f"/org/mpris/MediaPlayer2/track/{getattr(track, 'id', 0)}"
+        track_id = _mpris_track_id(getattr(track, "id", None))
         title = getattr(track, "name", "")
         artist = getattr(getattr(track, "artist", None), "name", "")
         album = getattr(getattr(track, "album", None), "name", "")
