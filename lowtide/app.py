@@ -983,15 +983,25 @@ class LowTideApp(App):
         # Fetch real track objects in the background for playback. Tracks that
         # fail are dropped, so remap saved_idx onto the shorter list: start at
         # the saved track, or the next one that loaded if it failed itself.
+        from lowtide.local_library import LocalLibrary
         tracks = []
         start_idx = 0
         for i, placeholder in enumerate(placeholders):
-            if placeholder.id is None:
+            tid = placeholder.id
+            if tid is None:
                 continue
-            try:
-                tracks.append(self.client.get_track(placeholder.id))
-            except Exception:
-                continue
+            if isinstance(tid, str):
+                # Local tracks are saved with their file path as ID (TIDAL IDs
+                # are ints), so rebuild them from the file instead of TIDAL.
+                track = LocalLibrary.track_from_path(tid)
+                if track is None:
+                    continue
+                tracks.append(track)
+            else:
+                try:
+                    tracks.append(self.client.get_track(tid))
+                except Exception:
+                    continue
             if i < saved_idx:
                 start_idx += 1
         if tracks:
