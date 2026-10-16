@@ -391,12 +391,22 @@ class LowTideApp(App):
         self.scrobbler.update(position, duration)
 
         # Crossfade: fade out as current track approaches its end
+        in_fade_window = False
         if self.player.crossfade_secs > 0 and duration > 0 and not paused:
             remaining = duration - position
             if 0 < remaining <= self.player.crossfade_secs:
+                in_fade_window = True
                 fade_vol = max(0, int((remaining / self.player.crossfade_secs) * self._target_volume))
                 await self.player._cmd(["set_property", "volume", fade_vol])
                 self._crossfading = True
+        # Left the fade window without a track change (e.g. seeked back):
+        # restore the volume rather than waiting for the next track to start.
+        if self._crossfading and not in_fade_window and not paused:
+            await self._end_crossfade()
+
+    async def _end_crossfade(self) -> None:
+        self._crossfading = False
+        await self.player.set_volume(self._target_volume)
 
     async def _on_mpv_track_end(self) -> None:
         """Called when a track ends. Handles queue exhaustion in weighted shuffle modes."""
@@ -422,8 +432,7 @@ class LowTideApp(App):
     async def _on_mpv_track_start(self) -> None:
         # Restore volume after a crossfade fade-out
         if self._crossfading:
-            self._crossfading = False
-            await self.player.set_volume(self._target_volume)
+            await self._end_crossfade()
 
         pos = await self.player.get_playlist_pos()
         if 0 <= pos < len(self._mpv_playlist):
@@ -755,6 +764,8 @@ class LowTideApp(App):
     async def action_toggle_crossfade(self) -> None:
         if self.player.crossfade_secs > 0:
             self.player.crossfade_secs = 0
+            if self._crossfading:
+                await self._end_crossfade()
             self.query_one(NowPlayingBar).crossfade = False
             self.notify("Crossfade off")
         else:
