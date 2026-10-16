@@ -256,8 +256,10 @@ class MPRISService:
             self._player_iface = MediaPlayer2PlayerInterface(
                 play_pause_cb=self._app.player.toggle_pause,
                 set_paused_cb=self._app.player.set_paused,
-                next_cb=self._app.player.next,
-                prev_cb=self._app.player.prev,
+                # Go through the app's actions so Next honours the weighted
+                # (favourites/discovery) shuffle picks, like the n key does.
+                next_cb=self._app.action_next_track,
+                prev_cb=self._app.action_prev_track,
                 seek_cb=self._app.player.seek,
                 set_volume_cb=self._app.set_volume_level,
                 set_shuffle_cb=self._app.set_shuffle_from_mpris,
