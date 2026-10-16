@@ -776,18 +776,43 @@ class LowTideApp(App):
             self.notify(f"Crossfade {self.player.crossfade_secs}s")
 
     async def action_toggle_shuffle(self) -> None:
-        self.player.shuffle_mode = (self.player.shuffle_mode + 1) % 4
-        mode = self.player.shuffle_mode
+        self._set_shuffle_mode((self.player.shuffle_mode + 1) % 4)
+
+    def _set_shuffle_mode(self, mode: int) -> None:
+        self.player.shuffle_mode = mode
         self.query_one(NowPlayingBar).shuffle_mode = mode
         self.mpris.update_shuffle(mode != SHUFFLE_OFF)
         self.notify(f"Shuffle: {SHUFFLE_LABELS[mode]}")
 
+    async def set_shuffle_from_mpris(self, shuffle: bool) -> None:
+        # MPRIS shuffle is on/off; "on" keeps any active mode (favourites,
+        # discovery) and only switches to random if shuffle was off.
+        if shuffle and self.player.shuffle_mode == SHUFFLE_OFF:
+            self._set_shuffle_mode(SHUFFLE_RANDOM)
+        elif not shuffle and self.player.shuffle_mode != SHUFFLE_OFF:
+            self._set_shuffle_mode(SHUFFLE_OFF)
+
     async def action_toggle_repeat(self) -> None:
-        await self.player.toggle_repeat()
+        await self._set_repeat(not self.player.repeat)
+
+    async def _set_repeat(self, repeat: bool) -> None:
+        if repeat != self.player.repeat:
+            await self.player.toggle_repeat()
         self.query_one(NowPlayingBar).repeat = self.player.repeat
         self.mpris.update_loop_status(self.player.repeat)
         state = "on" if self.player.repeat else "off"
         self.notify(f"Repeat {state}")
+
+    async def set_loop_from_mpris(self, status: str) -> None:
+        # Only whole-queue repeat exists, so "Track" maps to it too; the
+        # reported LoopStatus then reads "Playlist", the state actually applied.
+        if status not in ("None", "Track", "Playlist"):
+            return
+        repeat = status != "None"
+        if repeat != self.player.repeat:
+            await self._set_repeat(repeat)
+        else:
+            self.mpris.update_loop_status(self.player.repeat)
 
     @work(thread=True)
     def action_toggle_favourite(self) -> None:
@@ -907,12 +932,13 @@ class LowTideApp(App):
         await self.player.prev()
 
     async def action_volume_up(self) -> None:
-        self._target_volume = min(100, self._target_volume + 5)
-        await self.player.set_volume(self._target_volume)
-        self.mpris.update_volume(self._target_volume)
+        await self.set_volume_level(self._target_volume + 5)
 
     async def action_volume_down(self) -> None:
-        self._target_volume = max(0, self._target_volume - 5)
+        await self.set_volume_level(self._target_volume - 5)
+
+    async def set_volume_level(self, level: int) -> None:
+        self._target_volume = max(0, min(100, level))
         await self.player.set_volume(self._target_volume)
         self.mpris.update_volume(self._target_volume)
 

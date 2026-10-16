@@ -88,8 +88,14 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
         next_cb: Callable,
         prev_cb: Callable,
         seek_cb: Callable,
+        set_volume_cb: Callable,
+        set_shuffle_cb: Callable,
+        set_loop_cb: Callable,
     ):
         super().__init__("org.mpris.MediaPlayer2.Player")
+        self._set_volume_cb = set_volume_cb
+        self._set_shuffle_cb = set_shuffle_cb
+        self._set_loop_cb = set_loop_cb
         self._play_pause_cb = play_pause_cb
         self._set_paused_cb = set_paused_cb
         self._next_cb = next_cb
@@ -168,17 +174,19 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
     def LoopStatus(self) -> "s":  # noqa: F821
         return self._loop_status
 
+    # Setters forward to the app, which applies the change to the player and
+    # reports the resulting state back via MPRISService.update_*.
     @LoopStatus.setter
-    def LoopStatus(self, val: "s"):  # noqa: F821
-        self._loop_status = val
+    async def LoopStatus(self, val: "s"):  # noqa: F821
+        await self._set_loop_cb(val)
 
     @dbus_property()
     def Shuffle(self) -> "b":  # noqa: F821
         return self._shuffle
 
     @Shuffle.setter
-    def Shuffle(self, val: "b"):  # noqa: F821
-        self._shuffle = val
+    async def Shuffle(self, val: "b"):  # noqa: F821
+        await self._set_shuffle_cb(val)
 
     @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":  # noqa: F821
@@ -189,8 +197,8 @@ class MediaPlayer2PlayerInterface(ServiceInterface):
         return self._volume
 
     @Volume.setter
-    def Volume(self, val: "d"):  # noqa: F821
-        self._volume = max(0.0, min(1.0, val))
+    async def Volume(self, val: "d"):  # noqa: F821
+        await self._set_volume_cb(round(max(0.0, min(1.0, val)) * 100))
 
     @dbus_property(access=PropertyAccess.READ)
     def Position(self) -> "x":  # noqa: F821
@@ -251,6 +259,9 @@ class MPRISService:
                 next_cb=self._app.player.next,
                 prev_cb=self._app.player.prev,
                 seek_cb=self._app.player.seek,
+                set_volume_cb=self._app.set_volume_level,
+                set_shuffle_cb=self._app.set_shuffle_from_mpris,
+                set_loop_cb=self._app.set_loop_from_mpris,
             )
             self._bus.export(MPRIS_OBJECT_PATH, root_iface)
             self._bus.export(MPRIS_OBJECT_PATH, self._player_iface)
