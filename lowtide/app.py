@@ -1086,5 +1086,6 @@ class LowTideApp(App):
         self.scrobbler.shutdown()
         self._cleanup_macos_art_temp()
         self.client._clear_manifests()
+        self.client.save_tokens_if_changed()
         await self.mpris.stop()
         await self.player.shutdown()

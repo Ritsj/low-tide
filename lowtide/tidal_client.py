@@ -50,6 +50,7 @@ class TidalClient:
         self._api_lock = threading.Lock()
         self._quality_lock = threading.Lock()
         self._last_call_time = 0.0
+        self._saved_access_token: str | None = None
         # IDs of the user's favourite tracks, fetched lazily on first lookup and
         # kept in sync by add/remove_favourite_track.
         self._fav_lock = threading.Lock()
@@ -63,11 +64,12 @@ class TidalClient:
         except ValueError:
             self._quality_floor = 0
         # Hi-res DASH manifests are written here as temp .mpd files for mpv to
-        # play. Clear any left over from a previous run.
-        self._manifest_dir = os.path.join(tempfile.gettempdir(), "low-tide-manifests")
-        self._clear_manifests()
-        os.makedirs(self._manifest_dir, exist_ok=True)
+        # play. The dir is per process so a second instance doesn't delete
+        # manifests the first is still playing; it's removed on exit.
+        self._manifest_dir = tempfile.mkdtemp(prefix="low-tide-manifests-")
         self._try_load_tokens()
+        # The loaded access token may have been refreshed during login.
+        self.save_tokens_if_changed()
 
     def _clear_manifests(self) -> None:
         import shutil
@@ -128,6 +130,8 @@ class TidalClient:
             expiry = None
             if data.get("expiry_time"):
                 expiry = datetime.datetime.fromisoformat(data["expiry_time"])
+            os.chmod(CONF_PATH, 0o600)  # older versions wrote it world-readable
+            self._saved_access_token = data["access_token"]
             self.session.load_oauth_session(
                 token_type=data.get("token_type", "Bearer"),
                 access_token=data["access_token"],
@@ -146,8 +150,23 @@ class TidalClient:
             "token_type": getattr(self.session, "token_type", "Bearer"),
             "expiry_time": expiry.isoformat() if expiry else None,
         }
-        with open(CONF_PATH, "w") as f:
+        # Credentials: create owner-only, and tighten a file that already
+        # exists with looser permissions from older versions.
+        fd = os.open(CONF_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(data, f)
+        self._saved_access_token = self.session.access_token
+
+    def save_tokens_if_changed(self) -> None:
+        """Persist the session if tidalapi refreshed the access token, so the
+        next start doesn't have to refresh it again."""
+        token = getattr(self.session, "access_token", None)
+        if token and self._saved_access_token and token != self._saved_access_token:
+            try:
+                self._save_tokens()
+            except Exception as e:
+                log.warning("Could not save refreshed TIDAL tokens: %s", e)
 
     def ensure_login(self) -> None:
         if self.session.check_login():
