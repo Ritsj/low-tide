@@ -8,6 +8,7 @@ from rich.control import Control
 from rich.segment import Segment
 from textual import work
 from textual.app import ComposeResult
+from textual.geometry import Region
 from textual.widget import Widget
 from textual_image.widget import Image as TImage
 from textual_image.widget import SixelImage
@@ -30,6 +31,13 @@ class _SixelImpl(_ImageSixelImpl):
         segments[-1] = Segment(
             Control.move_to(region.right, region.bottom - 1).segment.text, style=segments[-1].style
         )
+        # Konsole erases one column too many when it places a Sixel image
+        # (Screen::eraseBlock clears x..x+width inclusive), blanking the cell
+        # right of the art -- drawn as a grey bar over the sidebar border.
+        # Repaint that column once this frame (and the erase) has gone out.
+        if region.right < self.screen.size.width:
+            beside = Region(region.right, region.y, 1, region.height)
+            self.call_after_refresh(self.screen.refresh, beside)
         return segments
 
 
