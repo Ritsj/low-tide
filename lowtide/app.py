@@ -317,16 +317,19 @@ class LowTideApp(App):
         height: 1fr;
         background: transparent;
     }
-    /* Focus frame: every navigable panel reserves a blank border so moving
-       focus doesn't shift the layout; the focused one draws it in the accent
-       colour. Tabs need 2 extra rows for the frame. */
-    ListView, DataTable, Tabs {
+    /* Focus frame (config "focus_frame", on by default): every navigable
+       panel reserves a blank border so moving focus doesn't shift the
+       layout; the focused one draws it in the accent colour. Tabs need 2
+       extra rows for the frame. */
+    App.-focus-frame ListView, App.-focus-frame DataTable, App.-focus-frame Tabs {
         border: blank;
     }
-    ListView:focus, DataTable:focus, Tabs:focus {
+    App.-focus-frame ListView:focus,
+    App.-focus-frame DataTable:focus,
+    App.-focus-frame Tabs:focus {
         border: round $accent;
     }
-    Tabs {
+    App.-focus-frame Tabs {
         height: 4;
     }
     """
@@ -381,6 +384,7 @@ class LowTideApp(App):
         self._eq_theme = cfg.get("eq_theme", "mono")
         self._eq_labels = bool(cfg.get("eq_labels", False))
         self._background = cfg.get("background", "ansi_default")
+        self.set_class(bool(cfg.get("focus_frame", True)), "-focus-frame")
         self._nav = list(_NAV_BASE)
         if self._local_library:
             self._nav.append(("local", "Local"))

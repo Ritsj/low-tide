@@ -234,6 +234,7 @@ Create `~/.config/low-tide/config.json` to override defaults:
 | `eq_theme` | `"classic"` `"fire"` `"ice"` `"mono"` `"neon"` | `"mono"` | Colour theme for the EQ visualiser in the now-playing bar. |
 | `eq_labels` | `true` / `false` | `false` | Show frequency labels (32 Hz – 16 kHz) beneath the EQ visualiser bars. |
 | `background` | CSS color string | `"ansi_default"` | App background color. `"ansi_default"` uses the terminal's default background, which respects your terminal emulator's transparency setting (e.g. `background_opacity` in kitty). Set to a hex color like `"#181825"` to disable transparency. |
+| `focus_frame` | `true` / `false` | `true` | Draw an accent-coloured frame around the list, track table or tab bar that has keyboard focus. Set to `false` for the plain look without frames. |
 
 ![EQ themes](assets/eq_themes.png)
 
