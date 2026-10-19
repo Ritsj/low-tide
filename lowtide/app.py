@@ -13,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widget import Widget
-from textual.widgets import Label, ListItem, ListView, TabbedContent, Tabs
+from textual.widgets import DataTable, Label, ListItem, ListView, TabbedContent, Tabs
 
 # Number of track URLs to keep buffered ahead of the current position in mpv's
 # playlist. Keeping this small prevents blasting the API when switching playlists.
@@ -128,6 +128,15 @@ class Sidebar(Widget):
 # Content area
 # ---------------------------------------------------------------------------
 
+def _at_top_row(widget: Widget) -> bool:
+    """Whether a list/table has its cursor on the first row (or is empty)."""
+    if isinstance(widget, ListView):
+        return not widget.index
+    if isinstance(widget, DataTable):
+        return widget.cursor_row <= 0
+    return False
+
+
 class ContentArea(Widget):
     DEFAULT_CSS = """
     ContentArea {
@@ -180,19 +189,26 @@ class ContentArea(Widget):
         await self.mount(widget)
 
     def on_key(self, event) -> None:
-        # Down on a tab header moves into the active tab's content (usually
-        # its list), instead of needing Tab to get there.
+        # Arrow keys move between a tab header and the active tab's list, so
+        # Tab/Shift+Tab aren't needed. This runs before the list's own up/down
+        # bindings, so "on the top row" is checked before the cursor moves.
         focused = self.app.focused
-        if event.key != "down" or not isinstance(focused, Tabs):
+        if focused is None:
             return
         tabbed = next((a for a in focused.ancestors if isinstance(a, TabbedContent)), None)
-        pane = tabbed.active_pane if tabbed is not None else None
-        if pane is None:
+        if tabbed is None:
             return
-        target = next((w for w in pane.query("*") if w.focusable), None)
-        if target is not None:
+        if event.key == "down" and isinstance(focused, Tabs):
+            pane = tabbed.active_pane
+            target = next((w for w in pane.query("*") if w.focusable), None) if pane else None
+            if target is not None:
+                event.stop()
+                event.prevent_default()
+                target.focus()
+        elif event.key == "up" and _at_top_row(focused):
             event.stop()
-            target.focus()
+            event.prevent_default()
+            tabbed.query_one(Tabs).focus()
 
 
 # ---------------------------------------------------------------------------
