@@ -15,6 +15,10 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 
 ## Recent Updates
 
+**Keyboard navigation and focus frame** – the list, track table or tab bar with keyboard focus now gets an accent-coloured frame, so it's always clear where the arrow keys act (turn it off with `"focus_frame": false`). Arrow keys move between a tab bar and its list: `↓` from the tabs enters the list, `↑` on the list's top row goes back. `Esc` now returns to the list you came from with the cursor on the same item, instead of jumping to the sidebar.
+
+**Bug fixes** – local files play again (they had stopped loading after the hi-res change) and are restored with the saved queue on restart. MPRIS `Play`/`Pause` no longer toggle, so an explicit pause can't resume playback, and volume, shuffle and repeat set from desktop widgets or `playerctl` now take effect; `Next` honours the favourites/discovery shuffle. Loving a track that was already a favourite now shows ♥, so `l` can remove it. Last.fm calls no longer freeze the UI, legacy Spotify exports import correctly, the saved queue resumes on the right track when some tracks are unavailable, and crossfade no longer leaves the volume low after seeking back. Several instances can run side by side, and `session.json` is now readable only by you.
+
 **MPRIS fixes for strict media clients** – low-tide now works with stricter MPRIS clients such as Quickshell/Caelestia, not just playerctl. The D-Bus service was silently failing to register because getter-only properties were declared writable, and even once visible it was missing root-interface properties (`Fullscreen`, `CanSetFullscreen`, `DesktopEntry`) that strict clients require. Live title, artist, artwork, duration and playback status now reach clients too, since property-change signals were being emitted through a nonexistent API and dropped. Seeking also follows MPRIS semantics properly: relative `Seek` and absolute progress-bar `SetPosition` both work. Thanks to @JDY-exe for the detailed report and diagnosis.
 
 **Hi-res playback** – tracks available in Hi-Res Lossless (FLAC up to 24-bit / 192 kHz) now play at full resolution. TIDAL delivers hi-res as a segmented DASH stream rather than a single file, which the previous stream fetch couldn't read, so hi-res tracks silently failed to play. low-tide now decodes the DASH manifest and hands it to mpv directly. Tracks that offer hi-res show a small ᴴᴵᴿᴱˢ badge in track lists, and if a quality tier isn't covered by your subscription, playback falls back to the next tier down instead of failing.
@@ -85,6 +89,8 @@ A terminal UI client for [TIDAL](https://tidal.com), built with Python. Browse y
 - Transparent UI designed for GPU-accelerated terminals
 - Queue panel toggle
 - Keyboard-first with mouse click support for track selection
+- Focus frame around the active list, table or tab bar (optional, see [Configuration](#configuration))
+- Arrow keys move between tab bars and their lists; `Esc` returns to where you were
 
 ## Requirements
 
@@ -147,6 +153,7 @@ After login, TIDAL issues an access token and a refresh token. These are stored 
 ```
 
 This file:
+- is created readable only by your user (permissions `0600`)
 - is never read by anything other than low-tide on your machine
 - is excluded from the repository via `.gitignore` and will never be committed
 - contains no password – only the OAuth tokens issued by TIDAL
@@ -174,9 +181,10 @@ The source code for token handling is in [`lowtide/tidal_client.py`](lowtide/tid
 | `a` | Add focused track to queue |
 | `A` | Add all tracks in current view to queue |
 | `q` | Toggle queue panel |
+| `↓` / `↑` | On a tab bar: move into the list. On a list's top row: back to the tab bar |
 | `ctrl+s` | Go to Search |
 | `ctrl+l` | Go to Library |
-| `escape` | Navigate back |
+| `escape` | Navigate back (to the list you came from, cursor kept) |
 | `ctrl+q` | Quit |
 
 ## Shuffle modes
@@ -282,10 +290,26 @@ lowtide/
   play_count_store.py  # play count persistence and weighted shuffle
   scrobble_store.py    # Last.fm scrobble history cache (used by Listening Journey)
   app.py               # app layout: sidebar, content area, queue panel
+  mpris.py             # MPRIS2 D-Bus service
+  lyrics.py            # synced (LRC) lyrics parsing
+  local_library.py     # local music scanning and tag cache
+  local_track.py       # local track/album/artist objects
   recommender.py       # Last.fm-powered radio and Ride the Tide logic
-  screens/             # library, search, playlist, album, artist, favorites, radio, genre, journey
+  screens/             # library, search, playlist, album, artist, favorites, radio, genre, journey, local
   widgets/             # now_playing bar, track list table, album art, EQ visualiser
+tests/                 # pytest suite (no TIDAL account, mpv or D-Bus needed)
 ```
+
+## Development
+
+Install with the test extras and run the suite:
+
+```bash
+pip install -e ".[test]"
+python -m pytest
+```
+
+The tests use stand-ins for TIDAL, mpv and D-Bus, so they run offline. One local-library test generates audio with `ffmpeg` and is skipped if it isn't installed.
 
 ## License
 
