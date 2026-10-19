@@ -13,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.widget import Widget
-from textual.widgets import Label, ListItem, ListView
+from textual.widgets import Label, ListItem, ListView, TabbedContent, Tabs
 
 # Number of track URLs to keep buffered ahead of the current position in mpv's
 # playlist. Keeping this small prevents blasting the API when switching playlists.
@@ -142,9 +142,13 @@ class ContentArea(Widget):
 
     def on_mount(self) -> None:
         self._stack: list[Widget] = list(self.children)
+        # Widget that had focus when each covered view was pushed over, so
+        # going back returns the cursor there instead of to the sidebar.
+        self._focus_stack: list[Widget | None] = []
 
     async def push(self, widget: Widget) -> None:
         if self._stack:
+            self._focus_stack.append(self.app.focused)
             self._stack[-1].display = False
         self._stack.append(widget)
         await self.mount(widget)
@@ -152,17 +156,43 @@ class ContentArea(Widget):
     async def pop(self) -> bool:
         if len(self._stack) > 1:
             old = self._stack.pop()
+            saved = self._focus_stack.pop() if self._focus_stack else None
+            view = self._stack[-1]
+            view.display = True
             await old.remove()
-            if self._stack:
-                self._stack[-1].display = True
+            self.call_after_refresh(self._restore_focus, view, saved)
             return True
         return False
+
+    def _restore_focus(self, view: Widget, saved: Widget | None) -> None:
+        if saved is not None and saved.is_attached and saved.focusable:
+            saved.focus()
+            return
+        target = next((w for w in view.query("*") if w.focusable), None)
+        if target is not None:
+            target.focus()
 
     async def replace(self, widget: Widget) -> None:
         for w in list(self._stack):
             await w.remove()
         self._stack = [widget]
+        self._focus_stack = []
         await self.mount(widget)
+
+    def on_key(self, event) -> None:
+        # Down on a tab header moves into the active tab's content (usually
+        # its list), instead of needing Tab to get there.
+        focused = self.app.focused
+        if event.key != "down" or not isinstance(focused, Tabs):
+            return
+        tabbed = next((a for a in focused.ancestors if isinstance(a, TabbedContent)), None)
+        pane = tabbed.active_pane if tabbed is not None else None
+        if pane is None:
+            return
+        target = next((w for w in pane.query("*") if w.focusable), None)
+        if target is not None:
+            event.stop()
+            target.focus()
 
 
 # ---------------------------------------------------------------------------
