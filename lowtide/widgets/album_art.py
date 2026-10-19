@@ -10,6 +10,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.geometry import Region
 from textual.widget import Widget
+from textual_image._terminal import get_cell_size
 from textual_image.widget import Image as TImage
 from textual_image.widget import SixelImage
 from textual_image.widget.sixel import _ImageSixelImpl, _NoopRenderable
@@ -31,14 +32,34 @@ class _SixelImpl(_ImageSixelImpl):
         segments[-1] = Segment(
             Control.move_to(region.right, region.bottom - 1).segment.text, style=segments[-1].style
         )
-        # Konsole erases one column too many when it places a Sixel image
-        # (Screen::eraseBlock clears x..x+width inclusive), blanking the cell
-        # right of the art -- drawn as a grey bar over the sidebar border.
-        # Repaint that column once this frame (and the erase) has gone out.
-        if region.right < self.screen.size.width:
-            beside = Region(region.right, region.y, 1, region.height)
-            self.call_after_refresh(self.screen.refresh, beside)
+        # Konsole blanks more cells than the image covers when it places a
+        # Sixel image, and draws them as grey bars in its default background:
+        # - one extra column (Screen::eraseBlock clears x..x+width inclusive);
+        # - extra rows, as it rounds the height up to whole 6-pixel bands
+        #   (a 165 px image counts as 168 px = 12 rows of 15 px, not 11).
+        # Repaint those cells once this frame (and the erase) has gone out.
+        # Textual repaints the bounding box of all dirty regions, and the box
+        # around the column and row together contains the image -- redrawing
+        # it would erase them again, in a loop -- so do them one per frame.
+        cell_height = get_cell_size().height
+        band_height = -(-region.height * cell_height // 6) * 6
+        extra_rows = (band_height - 1) // cell_height + 1 - region.height
+        screen = self.screen.size
+        repaint = []
+        if region.right < screen.width:
+            repaint.append(Region(region.right, region.y, 1, region.height))
+        if extra_rows > 0 and region.bottom < screen.height:
+            repaint.append(Region(region.x, region.bottom, region.width + 1, extra_rows))
+        if repaint:
+            self.call_after_refresh(self._repaint_one_per_frame, repaint)
         return segments
+
+    def _repaint_one_per_frame(self, regions: list[Region]) -> None:
+        if not regions or not self.is_attached:
+            return
+        self.screen.refresh(regions[0])
+        if regions[1:]:
+            self.call_after_refresh(self._repaint_one_per_frame, regions[1:])
 
 
 class _FixedSixelImage(SixelImage, Renderable=_NoopRenderable):

@@ -38,10 +38,10 @@ def test_sixel_cursor_returns_to_image_last_row():
     assert segments[-1].text == Control.move_to(region.right, region.bottom - 1).segment.text
 
 
-def test_column_beside_art_is_repainted_once_without_looping(monkeypatch):
-    """Konsole erases one column past a Sixel image; the column right of the art
-    must be repainted after each draw, without that repaint redrawing the image
-    (which would erase it again, in a loop)."""
+def test_cells_konsole_erases_are_repainted_without_looping(monkeypatch):
+    """Konsole erases one column past a Sixel image and whole 6-pixel bands
+    below it; those cells must be repainted after each draw, without the
+    repaint redrawing the image (which would erase them again, in a loop)."""
     from textual.containers import Horizontal
     from textual.geometry import Region
     from textual.screen import Screen
@@ -81,4 +81,11 @@ def test_column_beside_art_is_repainted_once_without_looping(monkeypatch):
     assert draws, "image never drawn"
     beside = Region(region.right, region.y, 1, region.height)
     assert beside in repaints
+    # Konsole counts the height in whole 6-pixel bands, so it erases extra rows
+    from textual_image._terminal import get_cell_size
+    ch = get_cell_size().height
+    extra = (-(-region.height * ch // 6) * 6 - 1) // ch + 1 - region.height
+    if extra:
+        assert Region(region.x, region.bottom, region.width + 1, extra) in repaints
+    assert not any(r.overlaps(region) for r in repaints)  # never the image itself
     assert len(draws) == settled  # the repaint doesn't redraw the image (no loop)
