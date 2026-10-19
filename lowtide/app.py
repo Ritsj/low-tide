@@ -317,6 +317,18 @@ class LowTideApp(App):
         height: 1fr;
         background: transparent;
     }
+    /* Focus frame: every navigable panel reserves a blank border so moving
+       focus doesn't shift the layout; the focused one draws it in the accent
+       colour. Tabs need 2 extra rows for the frame. */
+    ListView, DataTable, Tabs {
+        border: blank;
+    }
+    ListView:focus, DataTable:focus, Tabs:focus {
+        border: round $accent;
+    }
+    Tabs {
+        height: 4;
+    }
     """
 
     BINDINGS = [
