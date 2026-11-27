@@ -4,6 +4,6 @@ tidalapi>=0.8.11
 textual>=8.2.3
 textual-image>=0.12.0,<0.13
 Pillow>=12.2.0
-dbus-next>=0.2.3
+dbus-fast>=2.0
 pylast>=7.0.2
 mutagen>=1.47.0

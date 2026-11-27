@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from dbus_next import Variant
+from dbus_fast import Variant
 
 from lowtide.mpris import MediaPlayer2PlayerInterface, _mpris_track_id
 
